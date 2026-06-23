@@ -1,160 +1,266 @@
-import requests
-import json
+import logging
 import os
-from typing import List, Dict, Any
+import asyncio
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from terabox_api import TeraBoxClient
 
-class TeraBoxClient:
-    def __init__(self):
-        # आपका ndus cookie already embedded है
-        self.ndus = "YfX0nuMteHuiz2C6FldTYnK9ZHAl8TwK352_fecQ"
-        self.base_url = "https://www.terabox.com"
-        self.api_url = "https://www.terabox.com/api"
-        self.app_id = "250528"
-        self.session = requests.Session()
+# ============= CONFIGURATION =============
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    logger.error("Missing BOT_TOKEN! Please set it in environment variables.")
+    exit(1)
+
+# Initialize TeraBox Client (no credentials needed - ndus is embedded)
+try:
+    terabox = TeraBoxClient()
+    logger.info("✅ TeraBox client initialized successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize TeraBox client: {e}")
+    exit(1)
+
+# ============= BOT HANDLERS =============
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome_text = """
+🚀 **Welcome to TeraBox Bot!**
+
+I can help you manage your TeraBox files directly from Telegram.
+
+**Available Commands:**
+/start - Show this message
+/list - List files in your TeraBox
+/upload - Upload a file (reply to a file with /upload)
+/download - Download a file (use /download <file_id>)
+/mkdir - Create a new folder (use /mkdir <folder_name>)
+/delete - Delete a file (use /delete <file_id>)
+/help - Show detailed help
+
+**How to use:**
+• Send any file to upload it to TeraBox
+• Use /list to see your files
+• Use /download <file_id> to download a file
+"""
+    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+📖 **Detailed Help**
+
+**Upload Files:**
+Just send any file (photo, video, document) and it will be automatically uploaded to TeraBox.
+
+**List Files:**
+Use /list to see all files in your root directory.
+
+**Download Files:**
+Use /download <file_id> - You can get file_id from /list command.
+
+**Create Folder:**
+Use /mkdir <folder_name> to create a new folder.
+
+**Delete File:**
+Use /delete <file_id> to delete a file.
+
+**File IDs:**
+When you use /list, you'll see each file with its ID in parentheses.
+Example: `myfile.jpg (ID: 123456789)`
+"""
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.reply_text("📂 Fetching your files...")
+        files = terabox.list_files(limit=50)
+        if not files:
+            await update.message.reply_text("📭 No files found in your TeraBox.")
+            return
         
-        # Set the ndus cookie
-        self.session.cookies.set("ndus", self.ndus, domain=".terabox.com")
+        reply = "📁 **Your Files:**\n\n"
+        for item in files:
+            icon = "📁" if item.get("isdir") == 1 else "📄"
+            name = item.get("name", "Unknown")
+            file_id = item.get("fs_id", "N/A")
+            size = item.get("size", 0)
+            
+            if size > 1024 * 1024 * 1024:
+                size_str = f"{size / (1024*1024*1024):.2f} GB"
+            elif size > 1024 * 1024:
+                size_str = f"{size / (1024*1024):.2f} MB"
+            elif size > 1024:
+                size_str = f"{size / 1024:.2f} KB"
+            else:
+                size_str = f"{size} B"
+            
+            reply += f"{icon} `{name}`\n"
+            reply += f"   📎 ID: `{file_id}` | 📦 Size: {size_str}\n\n"
         
-        # Mimic a real browser
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.terabox.com/",
-            "Origin": "https://www.terabox.com"
-        })
-    
-    def _get_headers(self) -> Dict[str, str]:
-        return {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Referer": "https://www.terabox.com/",
-            "Origin": "https://www.terabox.com"
-        }
-    
-    def _get_params(self, extra: dict = None) -> dict:
-        params = {"app_id": self.app_id}
-        if extra:
-            params.update(extra)
-        return params
-    
-    def list_files(self, path: str = "/", limit: int = 100) -> List[Dict[str, Any]]:
-        url = f"{self.api_url}/list"
-        params = self._get_params({
-            "path": path,
-            "limit": limit,
-            "order": "time",
-            "desc": 1
-        })
-        resp = self.session.get(url, params=params, headers=self._get_headers())
-        if resp.status_code != 200:
-            raise Exception(f"List failed: {resp.status_code} - {resp.text[:200]}")
-        data = resp.json()
-        if data.get("errno") != 0:
-            raise Exception(f"List failed: {data.get('msg')}")
-        return data.get("data", {}).get("list", [])
-    
-    def upload_file(self, file_path: str, remote_path: str = "/") -> Dict[str, Any]:
-        if not os.path.exists(file_path):
-            raise Exception(f"File not found: {file_path}")
-        file_name = os.path.basename(file_path)
-        file_size = os.path.getsize(file_path)
+        if len(reply) > 4000:
+            parts = [reply[i:i+4000] for i in range(0, len(reply), 4000)]
+            for part in parts:
+                await update.message.reply_text(part, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(reply, parse_mode="Markdown")
+            
+    except Exception as e:
+        logger.error(f"List error: {e}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+async def download_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Please provide a file ID.\n"
+                "Usage: `/download <file_id>`\n"
+                "Get file IDs from /list command.",
+                parse_mode="Markdown"
+            )
+            return
         
-        # Pre-create
-        precreate_url = f"{self.api_url}/precreateFile"
-        params = self._get_params()
-        data = {
-            "filename": file_name,
-            "path": remote_path,
-            "size": file_size,
-            "uploadid": "",
-            "target": "l1"
-        }
-        resp = self.session.post(precreate_url, params=params, data=data, headers=self._get_headers())
-        if resp.status_code != 200:
-            raise Exception(f"Pre-create failed: {resp.status_code}")
-        result = resp.json()
-        if result.get("errno") != 0:
-            raise Exception(f"Pre-create error: {result.get('msg')}")
-        precreate_data = result.get("data", {})
-        if precreate_data.get("return_type") == 2:
-            return {"success": True, "message": "File already exists (rapid upload)", "data": precreate_data}
+        file_id = context.args[0]
+        await update.message.reply_text(f"⬇️ Downloading file (ID: {file_id})...")
         
-        upload_id = precreate_data.get("uploadid")
-        chunk_size = 4 * 1024 * 1024
-        total_chunks = (file_size + chunk_size - 1) // chunk_size
-        with open(file_path, 'rb') as f:
-            for i in range(total_chunks):
-                chunk = f.read(chunk_size)
-                upload_url = f"{self.api_url}/upload"
-                files = {"file": (file_name, chunk, "application/octet-stream")}
-                params_upload = self._get_params({
-                    "path": remote_path,
-                    "uploadid": upload_id,
-                    "partseq": i + 1
-                })
-                resp = self.session.post(upload_url, params=params_upload, files=files, headers=self._get_headers())
-                if resp.status_code != 200:
-                    raise Exception(f"Chunk {i+1} upload failed: {resp.status_code}")
-                upload_result = resp.json()
-                if upload_result.get("errno") != 0:
-                    raise Exception(f"Chunk {i+1} upload error: {upload_result.get('msg')}")
+        file_content = terabox.download_file(file_id)
         
-        # Create file
-        create_url = f"{self.api_url}/createFile"
-        params_create = self._get_params()
-        create_data = {
-            "path": remote_path,
-            "filename": file_name,
-            "size": file_size,
-            "uploadid": upload_id,
-            "target": "l1"
-        }
-        resp = self.session.post(create_url, params=params_create, data=create_data, headers=self._get_headers())
-        if resp.status_code != 200:
-            raise Exception(f"Create file failed: {resp.status_code}")
-        create_result = resp.json()
-        if create_result.get("errno") != 0:
-            raise Exception(f"Create file error: {create_result.get('msg')}")
-        return {"success": True, "message": "Upload successful", "data": create_result.get("data", {})}
+        files = terabox.list_files(limit=100)
+        filename = "downloaded_file"
+        for f in files:
+            if str(f.get("fs_id")) == str(file_id):
+                filename = f.get("name", "downloaded_file")
+                break
+        
+        await update.message.reply_document(
+            document=file_content,
+            filename=filename,
+            caption=f"✅ Downloaded from TeraBox\nFile ID: {file_id}"
+        )
+        
+    except Exception as e:
+        logger.error(f"Download error: {e}")
+        await update.message.reply_text(f"❌ Download failed: {str(e)}")
+
+async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not (update.message.document or update.message.photo or update.message.video):
+            await update.message.reply_text(
+                "❌ Please send a file (document, photo, or video) to upload."
+            )
+            return
+        
+        if update.message.document:
+            file_obj = update.message.document
+            file_name = file_obj.file_name or "document"
+        elif update.message.photo:
+            file_obj = update.message.photo[-1]
+            file_name = f"photo_{file_obj.file_id}.jpg"
+        elif update.message.video:
+            file_obj = update.message.video
+            file_name = file_obj.file_name or f"video_{file_obj.file_id}.mp4"
+        else:
+            return
+        
+        await update.message.reply_text(f"⬆️ Uploading `{file_name}` to TeraBox...", parse_mode="Markdown")
+        
+        file = await file_obj.get_file()
+        temp_path = f"/tmp/{file_name}"
+        await file.download_to_drive(temp_path)
+        
+        result = terabox.upload_file(temp_path, "/")
+        
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        
+        if result.get("success"):
+            await update.message.reply_text(
+                f"✅ **Upload Successful!**\n\n"
+                f"📄 File: `{file_name}`\n"
+                f"📁 Location: Root directory\n"
+                f"🔄 Status: {result.get('message', 'Completed')}",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"❌ Upload failed: {result.get('message', 'Unknown error')}")
+            
+    except Exception as e:
+        logger.error(f"Upload error: {e}")
+        await update.message.reply_text(f"❌ Upload failed: {str(e)}")
+
+async def create_folder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Please provide a folder name.\n"
+                "Usage: `/mkdir <folder_name>`",
+                parse_mode="Markdown"
+            )
+            return
+        
+        folder_name = " ".join(context.args)
+        await update.message.reply_text(f"📁 Creating folder `{folder_name}`...", parse_mode="Markdown")
+        
+        terabox.create_folder(folder_name, "/")
+        await update.message.reply_text(f"✅ Folder `{folder_name}` created successfully!", parse_mode="Markdown")
+        
+    except Exception as e:
+        logger.error(f"Create folder error: {e}")
+        await update.message.reply_text(f"❌ Failed to create folder: {str(e)}")
+
+async def delete_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Please provide a file ID.\n"
+                "Usage: `/delete <file_id>`\n"
+                "Get file IDs from /list command.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        file_id = context.args[0]
+        await update.message.reply_text(f"🗑️ Deleting file (ID: {file_id})...")
+        
+        terabox.delete_file(file_id)
+        await update.message.reply_text(f"✅ File deleted successfully!")
+        
+    except Exception as e:
+        logger.error(f"Delete error: {e}")
+        await update.message.reply_text(f"❌ Delete failed: {str(e)}")
+
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "❌ Unknown command. Use /start to see available commands."
+    )
+
+# ============= MAIN =============
+
+def main():
+    logger.info("🚀 Starting TeraBox Bot...")
     
-    def download_file(self, file_id: str) -> bytes:
-        url = f"{self.api_url}/locatedownload"
-        params = self._get_params({"fs_id": file_id, "target": "l1"})
-        resp = self.session.get(url, params=params, headers=self._get_headers())
-        if resp.status_code != 200:
-            raise Exception(f"Get download link failed: {resp.status_code}")
-        data = resp.json()
-        if data.get("errno") != 0:
-            raise Exception(f"Download link error: {data.get('msg')}")
-        dlink = data.get("data", {}).get("dlink")
-        if not dlink:
-            raise Exception("No download link found")
-        dl_resp = self.session.get(dlink, headers={"User-Agent": "Mozilla/5.0"})
-        if dl_resp.status_code != 200:
-            raise Exception(f"Download failed: {dl_resp.status_code}")
-        return dl_resp.content
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    def delete_file(self, file_id: str) -> bool:
-        url = f"{self.api_url}/filemanager"
-        params = self._get_params({"action": "delete", "target": "l1"})
-        payload = {"filelist": json.dumps([file_id])}
-        resp = self.session.post(url, params=params, data=payload, headers=self._get_headers())
-        if resp.status_code != 200:
-            raise Exception(f"Delete failed: {resp.status_code}")
-        data = resp.json()
-        if data.get("errno") != 0:
-            raise Exception(f"Delete error: {data.get('msg')}")
-        return True
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("list", list_files))
+    app.add_handler(CommandHandler("download", download_file))
+    app.add_handler(CommandHandler("mkdir", create_folder))
+    app.add_handler(CommandHandler("delete", delete_file))
     
-    def create_folder(self, folder_name: str, path: str = "/") -> bool:
-        url = f"{self.api_url}/filemanager"
-        params = self._get_params({"action": "mkdir", "target": "l1"})
-        payload = {"path": path, "name": folder_name}
-        resp = self.session.post(url, params=params, data=payload, headers=self._get_headers())
-        if resp.status_code != 200:
-            raise Exception(f"Create folder failed: {resp.status_code}")
-        data = resp.json()
-        if data.get("errno") != 0:
-            raise Exception(f"Create folder error: {data.get('msg')}")
-        return True
+    app.add_handler(MessageHandler(
+        filters.Document.ALL | filters.PHOTO | filters.VIDEO,
+        upload_handler
+    ))
+    
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    
+    logger.info("✅ Bot is running! Press Ctrl+C to stop.")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
