@@ -1,5 +1,5 @@
-python-telegram-bot==20.5
+python-telegram-bot==20.7
 aiohttp
 requests
 yt-dlp
-
+requests==2.31.0
