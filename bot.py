@@ -7,7 +7,7 @@ import os
 
 TERABOX_EMAIL = os.getenv("TERABOX_EMAIL")
 TERABOX_PASS = os.getenv("https://terabox-player.rishuapi.workers.dev/?url=https://terabox.com/s/1kpYz6J8xalpQtoDk4DH8Aw")
-BOT_TOKEN = os.getenv("7264340351:AAGlj_b05lGahWtTGCUcD-DxeG_FcXK6rJQ")
+BOT_TOKEN = os.getenv("8669431607:AAHz2inj95ZmsmD4w1MmGH7ybhaY5jvp8EQ")
 
 client = TeraBoxClient(TERABOX_EMAIL, "https://terabox-player.rishuapi.workers.dev/?url=https://terabox.com/s/1kpYz6J8xalpQtoDk4DH8Aw")
 
